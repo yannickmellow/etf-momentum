@@ -1,0 +1,32 @@
+name: Run ETF Screener
+
+on:
+  workflow_dispatch:   # manual trigger
+  schedule:
+    - cron: "0 10 * * 1-5"  # every weekday at 10:00 UTC
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run screener
+        run: python main.py
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add nav_timeseries.csv holdings_history.csv
+          git commit -m "🔄 Update ETF screener results [auto]" || echo "No changes to commit"
+          git push
