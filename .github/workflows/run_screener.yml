@@ -1,32 +1,49 @@
-name: Run ETF Screener
+name: ETF Screener Monthly
 
 on:
-  workflow_dispatch:   # manual trigger
   schedule:
-    - cron: "0 10 * * 1-5"  # every weekday at 10:00 UTC
+    # 1st day of each month, universe refresh at 08:00 UTC
+    - cron: '0 8 1 * *'
+  workflow_dispatch:
 
 jobs:
-  run:
+  refresh-universe:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v3
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-
+          python-version: '3.10'
       - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Run screener
-        run: python main.py
-
-      - name: Commit results
+      - name: Refresh ETF Universe
+        run: python populate_universe.py
+      - name: Commit universe.csv
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add nav_timeseries.csv holdings_history.csv
-          git commit -m "🔄 Update ETF screener results [auto]" || echo "No changes to commit"
+          git add universe.csv
+          git commit -m "🔄 Auto-update universe.csv [monthly]" || echo "No changes"
+          git push
+
+  run-screener:
+    needs: [refresh-universe]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run Screener
+        run: python main.py
+      - name: Commit Screener Results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add holdings_history.csv nav_timeseries.csv output.html || echo "No new files"
+          git commit -m "🔄 Update screener results [monthly]" || echo "No changes"
           git push
