@@ -29,7 +29,7 @@ lookbacks = {
 top_n = 10
 min_price = 5
 min_volume = 100_000
-max_52w_discount = 0.2  # must be within 20% of 52-week high
+max_52w_discount = 0.2  # ETF must be within 20% of 52-week high
 max_corr = 0.7  # max correlation allowed between selected ETFs
 
 # ---------------------------
@@ -59,7 +59,11 @@ print(f"✅ Got price history for {len(price_data)} ETFs")
 def compute_score(df):
     if "Close" not in df.columns:
         return None, {}
+
     close = df["Close"]
+    # Ensure it's a single Series
+    if isinstance(close, pd.DataFrame):
+        close = close.iloc[:, 0]
 
     scores = {}
     for label, lb in lookbacks.items():
@@ -78,12 +82,13 @@ def compute_score(df):
     )
 
     # 52-week high filter
-    high_52w = close[-252:].max() if len(close) >= 252 else close.max()
-    pct_from_high = (high_52w - close.iloc[-1]) / high_52w
+    high_52w = float(close[-252:].max()) if len(close) >= 252 else float(close.max())
+    last_close = float(close.iloc[-1])
+    pct_from_high = (high_52w - last_close) / high_52w
     if pct_from_high > max_52w_discount:
-        return None, {}  # reject ETF too far below 52-week high
+        return None, {}
 
-    # Volatility adjustment: smaller vol → higher adjusted score
+    # Volatility adjustment
     vol = close[-21:].std() / close[-21:].mean() if len(close) >= 21 else 0
     composite_adj = composite / (1 + vol)
 
@@ -123,8 +128,6 @@ print(f"✅ {len(candidates)} ETFs passed all filters before correlation check")
 # ---------------------------
 selected = []
 selected_returns = pd.DataFrame()
-
-# Sort candidates by adjusted score
 sorted_candidates = sorted(candidates.items(), key=lambda x: x[1]["score"], reverse=True)
 
 for ticker, info in sorted_candidates:
@@ -132,16 +135,15 @@ for ticker, info in sorted_candidates:
         break
 
     if not selected:
-        # first ETF always selected
         selected.append((ticker, info))
         selected_returns[ticker] = info["returns"]
         continue
 
-    # compute correlation vs already selected ETFs
+    # Correlation check
     new_ret = info["returns"]
     corr_with_selected = selected_returns.corrwith(new_ret).max()
     if corr_with_selected > max_corr:
-        continue  # skip if too correlated
+        continue
 
     selected.append((ticker, info))
     selected_returns[ticker] = new_ret
