@@ -8,14 +8,12 @@ import numpy as np
 # ---------------------------
 ETF_FILE = "etf_list.csv"
 
-# Load tickers flexibly (case-insensitive)
 df = pd.read_csv(ETF_FILE)
 df.columns = [c.lower() for c in df.columns]
 
 if "ticker" in df.columns:
     tickers = df["ticker"].dropna().unique().tolist()
 else:
-    # fallback: take first column
     tickers = df.iloc[:, 0].dropna().unique().tolist()
 
 print(f"📥 Loaded {len(tickers)} tickers from {ETF_FILE}")
@@ -28,9 +26,9 @@ lookbacks = {
     "6m": 126,
     "1m": 21,
 }
-top_n = 10  # number of ETFs to select
-min_price = 5  # optional filter
-min_volume = 100_000  # optional filter
+top_n = 10
+min_price = 5
+min_volume = 100_000
 
 # ---------------------------
 # 3. Fetch data
@@ -38,7 +36,7 @@ min_volume = 100_000  # optional filter
 def get_price_history(ticker, period="1y"):
     try:
         df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
-        if df.empty:
+        if df.empty or "Close" not in df.columns:
             return None
         return df
     except Exception as e:
@@ -57,7 +55,9 @@ print(f"✅ Got price history for {len(price_data)} ETFs")
 # 4. Momentum scoring
 # ---------------------------
 def compute_score(df):
-    close = df["Adj Close"]
+    if "Close" not in df.columns:
+        return None, {}
+    close = df["Close"]
 
     scores = {}
     for label, lb in lookbacks.items():
@@ -65,12 +65,10 @@ def compute_score(df):
             scores[label] = np.nan
         else:
             ret = close.iloc[-1] / close.iloc[-lb] - 1
-            # invert short-term return (mean reversion)
-            if label == "1m":
+            if label == "1m":  # invert short-term return
                 ret *= -1
             scores[label] = ret
 
-    # blend scores (weights can be tuned)
     composite = (
         0.5 * scores.get("12m", 0)
         + 0.3 * scores.get("6m", 0)
@@ -81,9 +79,10 @@ def compute_score(df):
 results = []
 for ticker, df_price in price_data.items():
     composite, scores = compute_score(df_price)
+    if composite is None:
+        continue
 
-    # simple filters
-    last_price = df_price["Adj Close"].iloc[-1]
+    last_price = df_price["Close"].iloc[-1]
     avg_vol = df_price["Volume"].tail(21).mean()
 
     if last_price < min_price or avg_vol < min_volume:
@@ -108,6 +107,5 @@ df_results = df_results.sort_values("score", ascending=False).reset_index(drop=T
 print("\n🏆 Top ETFs by momentum:")
 print(df_results.head(top_n))
 
-# Optionally save results
 df_results.to_csv("screener_results.csv", index=False)
 print("\n📂 Saved full results to screener_results.csv")
