@@ -1,4 +1,4 @@
-Ticker,Company
+Ticker,Name
 QQQ,Invesco QQQ Trust Series 1
 SCHD,Schwab US Dividend Equity ETF
 SPY,SPDR S&P 500 ETF Trust
@@ -1198,4 +1198,5 @@ FTHI,First Trust BuyWrite Income ETF
 FTLS,First Trust Long/Short Equity ETF
 FTQI,First Trust Nasdaq BuyWrite Income ETF
 FTRI,First Trust Indxx Global Natural Resources Income ETF
+
 FTSL,First Trust Senior Loan Fund ETF
