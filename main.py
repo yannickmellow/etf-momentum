@@ -1,35 +1,41 @@
-import yfinance as yf
 import pandas as pd
+import yfinance as yf
 from datetime import datetime
+import os
 
 # -----------------------------
-# User inputs
+# User parameters
 # -----------------------------
-etf_csv_file = "etf_list.csv"  # CSV file in GitHub repo root
-lookback_periods = {
-    "3m": 63,   # ~63 trading days
-    "6m": 126,
-    "12m": 252
-}
-top_n = 10  # Number of ETFs to select
+etf_csv_file = "etf_list.csv"  # CSV with Ticker, Name
+lookback_periods = {"3m": 63, "6m": 126, "12m": 252}  # trading days ~ 21 per month
+top_n = 10
+output_html = "docs/index.html"
 
 # -----------------------------
 # Helper functions
 # -----------------------------
-def calculate_momentum(prices, periods):
-    momentum_scores = {}
-    for period_name, period_days in periods.items():
-        if len(prices) >= period_days:
-            momentum_scores[period_name] = (prices[-1] / prices[-period_days] - 1) * 100
+def calculate_momentum(data, lookbacks):
+    momentum = {}
+    for period_name, days in lookbacks.items():
+        if len(data) >= days:
+            momentum[period_name] = ((data[-1] / data[-days]) - 1) * 100
         else:
-            momentum_scores[period_name] = None
-    return momentum_scores
+            momentum[period_name] = None
+    return momentum
 
 def evaluate_criteria(momentum, ma50, ma200):
     criteria = {}
-    for period in ["3m", "6m", "12m"]:
-        criteria[f"{period}_momentum_positive"] = momentum[period] is not None and momentum[period] > 0
-    criteria["above_ma200"] = ma200 is not None and ma50 > ma200
+    criteria['3m+'] = momentum.get('3m') is not None and momentum['3m'] > 0
+    criteria['6m+'] = momentum.get('6m') is not None and momentum['6m'] > 0
+    criteria['12m+'] = momentum.get('12m') is not None and momentum['12m'] > 0
+    criteria['Above MA200?'] = ma200 is not None and momentum.get('current_price', 0) > ma200
+    # Build reason string
+    reasons = []
+    if criteria['3m+']: reasons.append("3m+")
+    if criteria['6m+']: reasons.append("6m+")
+    if criteria['12m+']: reasons.append("12m+")
+    if criteria['Above MA200?']: reasons.append("Above MA200")
+    criteria['Reason for Selection'] = ", ".join(reasons) if reasons else "-"
     return criteria
 
 # -----------------------------
@@ -37,7 +43,7 @@ def evaluate_criteria(momentum, ma50, ma200):
 # -----------------------------
 try:
     etf_df = pd.read_csv(etf_csv_file)
-    etf_list = etf_df.iloc[:,0].tolist()  # assume first column contains tickers
+    etf_list = etf_df.to_dict(orient="records")  # [{'Ticker': 'SPY', 'Name': 'SPDR S&P 500 ETF'}, ...]
 except Exception as e:
     print(f"⚠️ Failed to read {etf_csv_file}: {e}")
     etf_list = []
@@ -47,7 +53,9 @@ except Exception as e:
 # -----------------------------
 results = []
 
-for etf in etf_list:
+for etf_entry in etf_list:
+    etf = etf_entry['Ticker']
+    etf_name = etf_entry['Name']
     try:
         data = yf.download(etf, period="1y", interval="1d")["Adj Close"]
         if data.empty:
@@ -55,50 +63,79 @@ for etf in etf_list:
             continue
 
         momentum = calculate_momentum(data, lookback_periods)
+        momentum['current_price'] = data[-1]
         ma50 = data[-50:].mean() if len(data) >= 50 else None
         ma200 = data[-200:].mean() if len(data) >= 200 else None
         criteria = evaluate_criteria(momentum, ma50, ma200)
 
         results.append({
             "ETF": etf,
+            "Name": etf_name,
             "Current Price": round(data[-1], 2),
-            **momentum,
+            "3m Momentum %": round(momentum['3m'], 2) if momentum['3m'] is not None else None,
+            "6m Momentum %": round(momentum['6m'], 2) if momentum['6m'] is not None else None,
+            "12m Momentum %": round(momentum['12m'], 2) if momentum['12m'] is not None else None,
             "MA50": round(ma50, 2) if ma50 else None,
             "MA200": round(ma200, 2) if ma200 else None,
-            **criteria
+            "3m+": criteria['3m+'],
+            "6m+": criteria['6m+'],
+            "12m+": criteria['12m+'],
+            "Above MA200?": criteria['Above MA200?'],
+            "Reason for Selection": criteria['Reason for Selection']
         })
 
     except Exception as e:
         print(f"⚠️ Error fetching {etf}: {e}")
 
 # -----------------------------
-# Convert to DataFrame and rank
+# Select top N based on sum of momentum %s
 # -----------------------------
-df = pd.DataFrame(results)
-df["12m_rank"] = df["12m"].rank(ascending=False)  # highest 12m momentum is rank 1
-df_sorted = df.sort_values("12m_rank").head(top_n)
+for r in results:
+    r['Momentum Score'] = sum([v for k,v in r.items() if k.endswith('Momentum %') and v is not None])
+
+selected = sorted(results, key=lambda x: x['Momentum Score'], reverse=True)[:top_n]
 
 # -----------------------------
-# Generate HTML
+# Generate HTML dashboard
 # -----------------------------
+html_rows = ""
+for r in results:
+    highlight = "style='background-color:#d4edda;'" if r in selected else ""
+    html_rows += f"""
+    <tr {highlight}>
+        <td>{r['ETF']}</td>
+        <td>{r['Name']}</td>
+        <td>{r['Current Price']}</td>
+        <td>{r['3m Momentum %']}</td>
+        <td>{r['6m Momentum %']}</td>
+        <td>{r['12m Momentum %']}</td>
+        <td>{r['MA50']}</td>
+        <td>{r['MA200']}</td>
+        <td>{r['3m+']}</td>
+        <td>{r['6m+']}</td>
+        <td>{r['12m+']}</td>
+        <td>{r['Above MA200?']}</td>
+        <td>{r['Reason for Selection']}</td>
+    </tr>
+    """
+
 html_content = f"""
 <html>
 <head>
-    <title>ETF Momentum Scanner</title>
+    <title>ETF Momentum Dashboard</title>
     <style>
-        body {{ font-family: Arial, sans-serif; padding: 20px; }}
-        table {{ border-collapse: collapse; width: 100%; }}
-        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: center; }}
-        th {{ background-color: #f2f2f2; }}
-        .pass {{ background-color: #c6f6d5; }}
-        .fail {{ background-color: #fed7d7; }}
+        table {{border-collapse: collapse; width: 100%;}}
+        th, td {{border: 1px solid #ccc; padding: 6px; text-align: center;}}
+        th {{background-color: #f2f2f2;}}
     </style>
 </head>
 <body>
-    <h1>Top {top_n} ETFs by 12-Month Momentum</h1>
+    <h2>ETF Momentum Dashboard - {datetime.now().strftime('%Y-%m-%d')}</h2>
+    <p>Top {top_n} ETFs highlighted in green.</p>
     <table>
         <tr>
             <th>ETF</th>
+            <th>Name</th>
             <th>Current Price</th>
             <th>3m Momentum %</th>
             <th>6m Momentum %</th>
@@ -111,44 +148,14 @@ html_content = f"""
             <th>Above MA200?</th>
             <th>Reason for Selection</th>
         </tr>
-"""
-
-for idx, row in df_sorted.iterrows():
-    reason = []
-    reason.append("3m momentum positive" if row["3m_momentum_positive"] else "3m momentum negative")
-    reason.append("6m momentum positive" if row["6m_momentum_positive"] else "6m momentum negative")
-    reason.append("12m momentum positive" if row["12m_momentum_positive"] else "12m momentum negative")
-    reason.append("Above MA200" if row["above_ma200"] else "Below MA200")
-    reason_text = "; ".join(reason)
-
-    html_content += f"""
-    <tr>
-        <td>{row['ETF']}</td>
-        <td>{row['Current Price']}</td>
-        <td>{row['3m']:.2f}</td>
-        <td>{row['6m']:.2f}</td>
-        <td>{row['12m']:.2f}</td>
-        <td>{row['MA50']}</td>
-        <td>{row['MA200']}</td>
-        <td class="{'pass' if row['3m_momentum_positive'] else 'fail'}">{row['3m_momentum_positive']}</td>
-        <td class="{'pass' if row['6m_momentum_positive'] else 'fail'}">{row['6m_momentum_positive']}</td>
-        <td class="{'pass' if row['12m_momentum_positive'] else 'fail'}">{row['12m_momentum_positive']}</td>
-        <td class="{'pass' if row['above_ma200'] else 'fail'}">{row['above_ma200']}</td>
-        <td>{reason_text}</td>
-    </tr>
-    """
-
-html_content += """
+        {html_rows}
     </table>
-    <p>Generated on {}</p>
 </body>
 </html>
-""".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+"""
 
-# -----------------------------
-# Write HTML file
-# -----------------------------
-with open("index.html", "w") as f:
+os.makedirs(os.path.dirname(output_html), exist_ok=True)
+with open(output_html, "w") as f:
     f.write(html_content)
 
-print(f"✅ HTML report generated with top {top_n} ETFs.")
+print(f"✅ Dashboard written to {output_html}")
