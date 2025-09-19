@@ -8,7 +8,16 @@ import numpy as np
 # ---------------------------
 ETF_FILE = "etf_list.csv"
 
-tickers = pd.read_csv(ETF_FILE)["ticker"].dropna().unique().tolist()
+# Load tickers flexibly (case-insensitive)
+df = pd.read_csv(ETF_FILE)
+df.columns = [c.lower() for c in df.columns]
+
+if "ticker" in df.columns:
+    tickers = df["ticker"].dropna().unique().tolist()
+else:
+    # fallback: take first column
+    tickers = df.iloc[:, 0].dropna().unique().tolist()
+
 print(f"📥 Loaded {len(tickers)} tickers from {ETF_FILE}")
 
 # ---------------------------
@@ -38,9 +47,9 @@ def get_price_history(ticker, period="1y"):
 
 price_data = {}
 for t in tickers:
-    df = get_price_history(t, period="1y")
-    if df is not None:
-        price_data[t] = df
+    df_price = get_price_history(t, period="1y")
+    if df_price is not None:
+        price_data[t] = df_price
 
 print(f"✅ Got price history for {len(price_data)} ETFs")
 
@@ -63,19 +72,19 @@ def compute_score(df):
 
     # blend scores (weights can be tuned)
     composite = (
-        0.5 * scores["12m"]
-        + 0.3 * scores["6m"]
-        + 0.2 * scores["1m"]
+        0.5 * scores.get("12m", 0)
+        + 0.3 * scores.get("6m", 0)
+        + 0.2 * scores.get("1m", 0)
     )
     return composite, scores
 
 results = []
-for ticker, df in price_data.items():
-    composite, scores = compute_score(df)
+for ticker, df_price in price_data.items():
+    composite, scores = compute_score(df_price)
 
     # simple filters
-    last_price = df["Adj Close"].iloc[-1]
-    avg_vol = df["Volume"].tail(21).mean()
+    last_price = df_price["Adj Close"].iloc[-1]
+    avg_vol = df_price["Volume"].tail(21).mean()
 
     if last_price < min_price or avg_vol < min_volume:
         continue
@@ -83,9 +92,9 @@ for ticker, df in price_data.items():
     results.append({
         "ticker": ticker,
         "score": composite,
-        "12m": scores["12m"],
-        "6m": scores["6m"],
-        "1m": scores["1m"],
+        "12m": scores.get("12m", np.nan),
+        "6m": scores.get("6m", np.nan),
+        "1m": scores.get("1m", np.nan),
         "last_price": last_price,
         "avg_volume": avg_vol,
     })
