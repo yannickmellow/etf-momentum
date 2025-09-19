@@ -1,168 +1,154 @@
-# main.py
-import pandas as pd
 import yfinance as yf
-import numpy as np
+import pandas as pd
+from datetime import datetime
 
-# ---------------------------
-# 1. Load ETF universe
-# ---------------------------
-ETF_FILE = "etf_list.csv"
-
-df = pd.read_csv(ETF_FILE)
-df.columns = [c.lower() for c in df.columns]
-
-if "ticker" in df.columns:
-    tickers = df["ticker"].dropna().unique().tolist()
-else:
-    tickers = df.iloc[:, 0].dropna().unique().tolist()
-
-print(f"📥 Loaded {len(tickers)} tickers from {ETF_FILE}")
-
-# ---------------------------
-# 2. Parameters
-# ---------------------------
-lookbacks = {
-    "12m": 252,
+# -----------------------------
+# User inputs
+# -----------------------------
+etf_csv_file = "etf_list.csv"  # CSV file in GitHub repo root
+lookback_periods = {
+    "3m": 63,   # ~63 trading days
     "6m": 126,
-    "1m": 21,
+    "12m": 252
 }
-top_n = 10
-min_price = 5
-min_volume = 100_000
-max_52w_discount = 0.2  # ETF must be within 20% of 52-week high
-max_corr = 0.7  # max correlation allowed between selected ETFs
+top_n = 10  # Number of ETFs to select
 
-# ---------------------------
-# 3. Fetch data
-# ---------------------------
-def get_price_history(ticker, period="1y"):
-    try:
-        df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
-        if df.empty or "Close" not in df.columns:
-            return None
-        return df
-    except Exception as e:
-        print(f"⚠️ Failed to fetch {ticker}: {e}")
-        return None
-
-price_data = {}
-for t in tickers:
-    df_price = get_price_history(t, period="1y")
-    if df_price is not None:
-        price_data[t] = df_price
-
-print(f"✅ Got price history for {len(price_data)} ETFs")
-
-# ---------------------------
-# 4. Momentum scoring with 52-week high & volatility
-# ---------------------------
-def compute_score(df):
-    if "Close" not in df.columns:
-        return None, {}
-
-    close = df["Close"]
-    # Ensure it's a single Series
-    if isinstance(close, pd.DataFrame):
-        close = close.iloc[:, 0]
-
-    scores = {}
-    for label, lb in lookbacks.items():
-        if len(close) < lb:
-            scores[label] = np.nan
+# -----------------------------
+# Helper functions
+# -----------------------------
+def calculate_momentum(prices, periods):
+    momentum_scores = {}
+    for period_name, period_days in periods.items():
+        if len(prices) >= period_days:
+            momentum_scores[period_name] = (prices[-1] / prices[-period_days] - 1) * 100
         else:
-            ret = close.iloc[-1] / close.iloc[-lb] - 1
-            if label == "1m":
-                ret *= -1
-            scores[label] = ret
+            momentum_scores[period_name] = None
+    return momentum_scores
 
-    composite = (
-        0.5 * scores.get("12m", 0)
-        + 0.3 * scores.get("6m", 0)
-        + 0.2 * scores.get("1m", 0)
-    )
+def evaluate_criteria(momentum, ma50, ma200):
+    criteria = {}
+    for period in ["3m", "6m", "12m"]:
+        criteria[f"{period}_momentum_positive"] = momentum[period] is not None and momentum[period] > 0
+    criteria["above_ma200"] = ma200 is not None and ma50 > ma200
+    return criteria
 
-    # 52-week high filter
-    high_52w = float(close[-252:].max()) if len(close) >= 252 else float(close.max())
-    last_close = float(close.iloc[-1])
-    pct_from_high = (high_52w - last_close) / high_52w
-    if pct_from_high > max_52w_discount:
-        return None, {}
+# -----------------------------
+# Load ETF list
+# -----------------------------
+try:
+    etf_df = pd.read_csv(etf_csv_file)
+    etf_list = etf_df.iloc[:,0].tolist()  # assume first column contains tickers
+except Exception as e:
+    print(f"⚠️ Failed to read {etf_csv_file}: {e}")
+    etf_list = []
 
-    # Volatility adjustment
-    vol = close[-21:].std() / close[-21:].mean() if len(close) >= 21 else 0
-    composite_adj = composite / (1 + vol)
+# -----------------------------
+# Fetch data and analyze
+# -----------------------------
+results = []
 
-    return composite_adj, scores
+for etf in etf_list:
+    try:
+        data = yf.download(etf, period="1y", interval="1d")["Adj Close"]
+        if data.empty:
+            print(f"⚠️ No data for {etf}, skipping.")
+            continue
 
-# ---------------------------
-# 5. Apply filters & compute scores
-# ---------------------------
-candidates = {}
-for ticker, df_price in price_data.items():
-    score_adj, scores = compute_score(df_price)
-    if score_adj is None:
-        continue
+        momentum = calculate_momentum(data, lookback_periods)
+        ma50 = data[-50:].mean() if len(data) >= 50 else None
+        ma200 = data[-200:].mean() if len(data) >= 200 else None
+        criteria = evaluate_criteria(momentum, ma50, ma200)
 
-    last_price = float(df_price["Close"].iloc[-1])
-    avg_vol = float(df_price["Volume"].tail(21).mean())
+        results.append({
+            "ETF": etf,
+            "Current Price": round(data[-1], 2),
+            **momentum,
+            "MA50": round(ma50, 2) if ma50 else None,
+            "MA200": round(ma200, 2) if ma200 else None,
+            **criteria
+        })
 
-    if pd.isna(last_price) or pd.isna(avg_vol):
-        continue
-    if last_price < min_price or avg_vol < min_volume:
-        continue
+    except Exception as e:
+        print(f"⚠️ Error fetching {etf}: {e}")
 
-    candidates[ticker] = {
-        "score": score_adj,
-        "12m": scores.get("12m", np.nan),
-        "6m": scores.get("6m", np.nan),
-        "1m": scores.get("1m", np.nan),
-        "last_price": last_price,
-        "avg_volume": avg_vol,
-        "returns": df_price["Close"].pct_change().fillna(0),  # daily returns
-    }
+# -----------------------------
+# Convert to DataFrame and rank
+# -----------------------------
+df = pd.DataFrame(results)
+df["12m_rank"] = df["12m"].rank(ascending=False)  # highest 12m momentum is rank 1
+df_sorted = df.sort_values("12m_rank").head(top_n)
 
-print(f"✅ {len(candidates)} ETFs passed all filters before correlation check")
+# -----------------------------
+# Generate HTML
+# -----------------------------
+html_content = f"""
+<html>
+<head>
+    <title>ETF Momentum Scanner</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; padding: 20px; }}
+        table {{ border-collapse: collapse; width: 100%; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: center; }}
+        th {{ background-color: #f2f2f2; }}
+        .pass {{ background-color: #c6f6d5; }}
+        .fail {{ background-color: #fed7d7; }}
+    </style>
+</head>
+<body>
+    <h1>Top {top_n} ETFs by 12-Month Momentum</h1>
+    <table>
+        <tr>
+            <th>ETF</th>
+            <th>Current Price</th>
+            <th>3m Momentum %</th>
+            <th>6m Momentum %</th>
+            <th>12m Momentum %</th>
+            <th>MA50</th>
+            <th>MA200</th>
+            <th>3m+?</th>
+            <th>6m+?</th>
+            <th>12m+?</th>
+            <th>Above MA200?</th>
+            <th>Reason for Selection</th>
+        </tr>
+"""
 
-# ---------------------------
-# 6. Select top ETFs with correlation filter
-# ---------------------------
-selected = []
-selected_returns = pd.DataFrame()
-sorted_candidates = sorted(candidates.items(), key=lambda x: x[1]["score"], reverse=True)
+for idx, row in df_sorted.iterrows():
+    reason = []
+    reason.append("3m momentum positive" if row["3m_momentum_positive"] else "3m momentum negative")
+    reason.append("6m momentum positive" if row["6m_momentum_positive"] else "6m momentum negative")
+    reason.append("12m momentum positive" if row["12m_momentum_positive"] else "12m momentum negative")
+    reason.append("Above MA200" if row["above_ma200"] else "Below MA200")
+    reason_text = "; ".join(reason)
 
-for ticker, info in sorted_candidates:
-    if len(selected) >= top_n:
-        break
+    html_content += f"""
+    <tr>
+        <td>{row['ETF']}</td>
+        <td>{row['Current Price']}</td>
+        <td>{row['3m']:.2f}</td>
+        <td>{row['6m']:.2f}</td>
+        <td>{row['12m']:.2f}</td>
+        <td>{row['MA50']}</td>
+        <td>{row['MA200']}</td>
+        <td class="{'pass' if row['3m_momentum_positive'] else 'fail'}">{row['3m_momentum_positive']}</td>
+        <td class="{'pass' if row['6m_momentum_positive'] else 'fail'}">{row['6m_momentum_positive']}</td>
+        <td class="{'pass' if row['12m_momentum_positive'] else 'fail'}">{row['12m_momentum_positive']}</td>
+        <td class="{'pass' if row['above_ma200'] else 'fail'}">{row['above_ma200']}</td>
+        <td>{reason_text}</td>
+    </tr>
+    """
 
-    if not selected:
-        selected.append((ticker, info))
-        selected_returns[ticker] = info["returns"]
-        continue
+html_content += """
+    </table>
+    <p>Generated on {}</p>
+</body>
+</html>
+""".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-    # Correlation check
-    new_ret = info["returns"]
-    corr_with_selected = selected_returns.corrwith(new_ret).max()
-    if corr_with_selected > max_corr:
-        continue
+# -----------------------------
+# Write HTML file
+# -----------------------------
+with open("index.html", "w") as f:
+    f.write(html_content)
 
-    selected.append((ticker, info))
-    selected_returns[ticker] = new_ret
-
-# ---------------------------
-# 7. Output final results
-# ---------------------------
-df_results = pd.DataFrame([{
-    "ticker": t,
-    "score": i["score"],
-    "12m": i["12m"],
-    "6m": i["6m"],
-    "1m": i["1m"],
-    "last_price": i["last_price"],
-    "avg_volume": i["avg_volume"]
-} for t, i in selected])
-
-print("\n🏆 Top ETFs after correlation filter:")
-print(df_results)
-
-df_results.to_csv("screener_results.csv", index=False)
-print("\n📂 Saved final results to screener_results.csv")
+print(f"✅ HTML report generated with top {top_n} ETFs.")
