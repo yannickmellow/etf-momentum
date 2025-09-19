@@ -29,6 +29,8 @@ lookbacks = {
 top_n = 10
 min_price = 5
 min_volume = 100_000
+max_52w_discount = 0.2  # must be within 20% of 52-week high
+max_corr = 0.7  # max correlation allowed between selected ETFs
 
 # ---------------------------
 # 3. Fetch data
@@ -52,7 +54,7 @@ for t in tickers:
 print(f"✅ Got price history for {len(price_data)} ETFs")
 
 # ---------------------------
-# 4. Momentum scoring
+# 4. Momentum scoring with 52-week high & volatility
 # ---------------------------
 def compute_score(df):
     if "Close" not in df.columns:
@@ -65,7 +67,7 @@ def compute_score(df):
             scores[label] = np.nan
         else:
             ret = close.iloc[-1] / close.iloc[-lb] - 1
-            if label == "1m":  # invert short-term return
+            if label == "1m":
                 ret *= -1
             scores[label] = ret
 
@@ -74,38 +76,91 @@ def compute_score(df):
         + 0.3 * scores.get("6m", 0)
         + 0.2 * scores.get("1m", 0)
     )
-    return composite, scores
 
-results = []
+    # 52-week high filter
+    high_52w = close[-252:].max() if len(close) >= 252 else close.max()
+    pct_from_high = (high_52w - close.iloc[-1]) / high_52w
+    if pct_from_high > max_52w_discount:
+        return None, {}  # reject ETF too far below 52-week high
+
+    # Volatility adjustment: smaller vol → higher adjusted score
+    vol = close[-21:].std() / close[-21:].mean() if len(close) >= 21 else 0
+    composite_adj = composite / (1 + vol)
+
+    return composite_adj, scores
+
+# ---------------------------
+# 5. Apply filters & compute scores
+# ---------------------------
+candidates = {}
 for ticker, df_price in price_data.items():
-    composite, scores = compute_score(df_price)
-    if composite is None:
+    score_adj, scores = compute_score(df_price)
+    if score_adj is None:
         continue
 
-    last_price = df_price["Close"].iloc[-1]
-    avg_vol = df_price["Volume"].tail(21).mean()
+    last_price = float(df_price["Close"].iloc[-1])
+    avg_vol = float(df_price["Volume"].tail(21).mean())
 
+    if pd.isna(last_price) or pd.isna(avg_vol):
+        continue
     if last_price < min_price or avg_vol < min_volume:
         continue
 
-    results.append({
-        "ticker": ticker,
-        "score": composite,
+    candidates[ticker] = {
+        "score": score_adj,
         "12m": scores.get("12m", np.nan),
         "6m": scores.get("6m", np.nan),
         "1m": scores.get("1m", np.nan),
         "last_price": last_price,
         "avg_volume": avg_vol,
-    })
+        "returns": df_price["Close"].pct_change().fillna(0),  # daily returns
+    }
+
+print(f"✅ {len(candidates)} ETFs passed all filters before correlation check")
 
 # ---------------------------
-# 5. Rank and output
+# 6. Select top ETFs with correlation filter
 # ---------------------------
-df_results = pd.DataFrame(results)
-df_results = df_results.sort_values("score", ascending=False).reset_index(drop=True)
+selected = []
+selected_returns = pd.DataFrame()
 
-print("\n🏆 Top ETFs by momentum:")
-print(df_results.head(top_n))
+# Sort candidates by adjusted score
+sorted_candidates = sorted(candidates.items(), key=lambda x: x[1]["score"], reverse=True)
+
+for ticker, info in sorted_candidates:
+    if len(selected) >= top_n:
+        break
+
+    if not selected:
+        # first ETF always selected
+        selected.append((ticker, info))
+        selected_returns[ticker] = info["returns"]
+        continue
+
+    # compute correlation vs already selected ETFs
+    new_ret = info["returns"]
+    corr_with_selected = selected_returns.corrwith(new_ret).max()
+    if corr_with_selected > max_corr:
+        continue  # skip if too correlated
+
+    selected.append((ticker, info))
+    selected_returns[ticker] = new_ret
+
+# ---------------------------
+# 7. Output final results
+# ---------------------------
+df_results = pd.DataFrame([{
+    "ticker": t,
+    "score": i["score"],
+    "12m": i["12m"],
+    "6m": i["6m"],
+    "1m": i["1m"],
+    "last_price": i["last_price"],
+    "avg_volume": i["avg_volume"]
+} for t, i in selected])
+
+print("\n🏆 Top ETFs after correlation filter:")
+print(df_results)
 
 df_results.to_csv("screener_results.csv", index=False)
-print("\n📂 Saved full results to screener_results.csv")
+print("\n📂 Saved final results to screener_results.csv")
