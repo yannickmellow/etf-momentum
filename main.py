@@ -2,7 +2,7 @@
 ETF Screener + Monthly Rebalancer (scaffold)
 
 Features implemented in this single-file scaffold:
-- Load ETF universe from CSV (ticker, name, region, sector, tag)
+- Load ETF etf_list from CSV (ticker, name, region, sector, tag)
 - Fetch historical daily prices using yahooquery (batched)
 - Compute multi-timeframe momentum: 12m, 6m, 1m (1m inverted)
 - Blend into composite performance score with configurable weights
@@ -16,7 +16,7 @@ NOTES:
 - This is a scaffold to iterate from; many production features can be added: caching,
   error handling, logging, parallel fetching, dividend-adjusted total return, commissions/slippage.
 
-CSV universe format (example):
+CSV etf_list format (example):
 # ticker,name,region,sector,tag
 SPY,SPDR S&P 500 Trust,US,Equity,LargeCap
 EFA,iShares MSCI EAFE ETF,Global,Equity,Developed
@@ -36,7 +36,7 @@ import math
 
 # -------------------- USER PARAMETERS --------------------#
 
-UNIVERSE_CSV = 'universe.csv'    # must contain a column 'ticker' and optional 'tag' (sector/country grouping)
+etf_list_CSV = 'etf_list.csv'    # must contain a column 'ticker' and optional 'tag' (sector/country grouping)
 START_DATE = '2015-01-01'
 END_DATE = None  # None means today
 LOOKBACK_12M = 252  # trading days (approx)
@@ -55,7 +55,7 @@ CASH_RESERVE_PCT = 0.0  # keep a cash % if desired
 
 # -------------------- UTILITIES --------------------#
 
-# Load static ETF universe
+# Load static ETF etf_list
 etf_file = "etf_list.csv"  # adjust path if needed
 tickers = pd.read_csv(etf_file)["ticker"].dropna().unique().tolist()
 
@@ -156,7 +156,7 @@ def compute_scores(price_df, weights=None):
 
 # -------------------- CORRELATION / CONCENTRATION FILTER --------------------#
 
-def enforce_correlation_and_tags(selected, price_df, universe_df, max_per_tag=MAX_EXPOSURE_PER_TAG, top_n=TOP_N):
+def enforce_correlation_and_tags(selected, price_df, etf_list_df, max_per_tag=MAX_EXPOSURE_PER_TAG, top_n=TOP_N):
     """Given an initial selection (list ordered by score desc), enforce tag-based concentration limits.
     This function will iterate down the ranked list and select funds while capping exposure per tag.
     Output is list of chosen tickers (length <= top_n).
@@ -166,9 +166,9 @@ def enforce_correlation_and_tags(selected, price_df, universe_df, max_per_tag=MA
     weights = {}
     # Equal weight allocation for chosen funds
     for t in selected:
-        tag = universe_df.loc[universe_df['ticker'] == t, 'tag'].values
+        tag = etf_list_df.loc[etf_list_df['ticker'] == t, 'tag'].values
         tag = tag[0] if len(tag) > 0 else 'Other'
-        current_count_for_tag = sum(1 for c in chosen if universe_df.loc[universe_df['ticker'] == c, 'tag'].values[0] == tag)
+        current_count_for_tag = sum(1 for c in chosen if etf_list_df.loc[etf_list_df['ticker'] == c, 'tag'].values[0] == tag)
         # if giving equal weights, cap is floor(max_per_tag * top_n)
         max_count = math.floor(max_per_tag * top_n)
         # ensure at least 1 slot available if max_count == 0
@@ -189,7 +189,7 @@ def get_monthly_rebalance_dates(price_df):
     return pd.to_datetime(month_ends.values)
 
 
-def run_monthly_backtest(price_df, universe_df, start_date=None, end_date=None, top_n=TOP_N):
+def run_monthly_backtest(price_df, etf_list_df, start_date=None, end_date=None, top_n=TOP_N):
     # prepare
     if start_date is None:
         start_date = price_df.index[0]
@@ -213,7 +213,7 @@ def run_monthly_backtest(price_df, universe_df, start_date=None, end_date=None, 
         # rank
         ranked = scores.sort_values('score', ascending=False)
         candidates = list(ranked.index)
-        chosen = enforce_correlation_and_tags(candidates, price_df, universe_df, max_per_tag=MAX_EXPOSURE_PER_TAG, top_n=top_n)
+        chosen = enforce_correlation_and_tags(candidates, price_df, etf_list_df, max_per_tag=MAX_EXPOSURE_PER_TAG, top_n=top_n)
         # assign equal weights
         if len(chosen) == 0:
             portfolio = {}
@@ -257,8 +257,8 @@ def run_monthly_backtest(price_df, universe_df, start_date=None, end_date=None, 
 # -------------------- MAIN EXECUTION --------------------#
 
 if __name__ == '__main__':
-    # Load universe
-    uni = load_universe(UNIVERSE_CSV)
+    # Load etf_list
+    uni = load_etf_list(etf_list_CSV)
     tickers = uni['ticker'].tolist()
 
     # Fetch prices
