@@ -96,10 +96,16 @@ for r in results:
 selected = sorted(results, key=lambda x: x['Momentum Score'], reverse=True)[:top_n]
 
 # -----------------------------
-# Generate HTML dashboard
+# Generate HTML dashboard with reason badges
 # -----------------------------
 html_rows = ""
 for r in results:
+    # Build colored badges for criteria
+    criteria_badges = ""
+    for crit, display in [("3m+", r["3m+"]), ("6m+", r["6m+"]), ("12m+", r["12m+"]), ("Above MA200?", r["Above MA200?"])]:
+        color = "#28a745" if display else "#ccc"  # green if met, gray if not
+        criteria_badges += f"<span style='display:inline-block;padding:2px 6px;margin:2px;background-color:{color};color:white;border-radius:4px;font-size:0.9em'>{crit}</span>"
+
     highlight = "style='background-color:#d4edda;'" if r in selected else ""
     html_rows += f"""
     <tr {highlight}>
@@ -111,11 +117,7 @@ for r in results:
         <td>{r['12m Momentum %']}</td>
         <td>{r['MA50']}</td>
         <td>{r['MA200']}</td>
-        <td>{r['3m+']}</td>
-        <td>{r['6m+']}</td>
-        <td>{r['12m+']}</td>
-        <td>{r['Above MA200?']}</td>
-        <td>{r['Reason for Selection']}</td>
+        <td colspan="4">{criteria_badges}</td>
     </tr>
     """
 
@@ -131,7 +133,7 @@ html_content = f"""
 </head>
 <body>
     <h2>ETF Momentum Dashboard - {datetime.now().strftime('%Y-%m-%d')}</h2>
-    <p>Top {top_n} ETFs highlighted in green.</p>
+    <p>Top {top_n} ETFs highlighted in green. Colored badges indicate criteria met.</p>
     <table>
         <tr>
             <th>ETF</th>
@@ -142,11 +144,7 @@ html_content = f"""
             <th>12m Momentum %</th>
             <th>MA50</th>
             <th>MA200</th>
-            <th>3m+?</th>
-            <th>6m+?</th>
-            <th>12m+?</th>
-            <th>Above MA200?</th>
-            <th>Reason for Selection</th>
+            <th colspan="4">Selection Criteria</th>
         </tr>
         {html_rows}
     </table>
@@ -154,7 +152,6 @@ html_content = f"""
 </html>
 """
 
-os.makedirs(os.path.dirname(output_html), exist_ok=True)
 with open(output_html, "w") as f:
     f.write(html_content)
 
