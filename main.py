@@ -55,14 +55,12 @@ CASH_RESERVE_PCT = 0.0  # keep a cash % if desired
 
 # -------------------- UTILITIES --------------------#
 
-def load_universe(csv_path):
-    df = pd.read_csv(csv_path, dtype=str)
-    if 'ticker' not in df.columns:
-        raise ValueError('Universe CSV must have a `ticker` column')
-    df['tag'] = df.get('tag', df.get('sector', df.get('region', 'Other')))
-    df = df.dropna(subset=['ticker'])
-    df['ticker'] = df['ticker'].str.strip()
-    return df
+# Load static ETF universe
+etf_file = "etf_list.csv"  # adjust path if needed
+tickers = pd.read_csv(etf_file)["ticker"].dropna().unique().tolist()
+
+print(f"📥 Loaded {len(tickers)} tickers from {etf_file}")
+
 
 
 def fetch_price_history(tickers, start_date, end_date=None, interval='1d'):
