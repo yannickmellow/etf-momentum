@@ -37,7 +37,7 @@ min_volume = 100_000  # optional filter
 # ---------------------------
 def get_price_history(ticker, period="1y"):
     try:
-        df = yf.download(ticker, period=period, progress=False)
+        df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
         if df.empty:
             return None
         return df
