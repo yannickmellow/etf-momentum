@@ -1,108 +1,76 @@
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
 from pathlib import Path
 
-# File paths
-ETF_LIST_FILE = "etf_list.csv"
-OUTPUT_HTML = "index.html"
-
-# Momentum parameters
-SHORT_TERM_DAYS = 21   # ~1 month
-MEDIUM_TERM_DAYS = 63  # ~3 months
+# -----------------------------
+# CONFIG
+# -----------------------------
+ETF_CSV = "etf_list.csv"  # CSV with 'Ticker','Name'
+SHORT_TERM_DAYS = 21      # ~1 month
+MEDIUM_TERM_DAYS = 63     # ~3 months
 TOP_N = 10
+HTML_OUTPUT = "index.html"
 
-# Read ETF list
-try:
-    etf_df = pd.read_csv(ETF_LIST_FILE)
-except Exception as e:
-    print(f"⚠️ Error reading {ETF_LIST_FILE}: {e}")
-    exit(1)
+# -----------------------------
+# READ ETF LIST
+# -----------------------------
+etf_df = pd.read_csv(ETF_CSV)
+etf_list = etf_df.to_dict("records")  # [{'Ticker':..., 'Name':...}, ...]
 
-# Container for results
 results = []
 
-# Fetch data and compute momentum
-for idx, row in etf_df.iterrows():
-    ticker = row['Ticker']
-    name = row['Name']
+# -----------------------------
+# CALCULATE MOMENTUM
+# -----------------------------
+for etf in etf_list:
+    ticker = etf['Ticker']
+    name = etf['Name']
     try:
-        ticker_obj = yf.Ticker(ticker)
-        data = ticker_obj.history(period="1y", interval="1d", auto_adjust=True)
-        if data.empty:
-            raise ValueError("No data returned")
-        close = data["Close"]
+        data = yf.download(ticker, period="1y", interval="1d", progress=False)['Adj Close']
+        if len(data) < MEDIUM_TERM_DAYS + 1:
+            print(f"⚠️ Not enough data for {ticker} ({name})")
+            continue
 
-        # Compute simple momentum
-        if len(close) >= MEDIUM_TERM_DAYS:
-            momentum_1m = (close[-1] / close[-SHORT_TERM_DAYS] - 1) * 100
-            momentum_3m = (close[-1] / close[-MEDIUM_TERM_DAYS] - 1) * 100
-            results.append({
-                "Ticker": ticker,
-                "Name": name,
-                "1M (%)": round(momentum_1m, 2),
-                "3M (%)": round(momentum_3m, 2),
-                "Rank": 0  # placeholder
-            })
-        else:
-            print(f"⚠️ Not enough data for {ticker} ({len(close)} rows)")
+        momentum_1m = (data.iloc[-1] / data.iloc[-SHORT_TERM_DAYS] - 1) * 100
+        momentum_3m = (data.iloc[-1] / data.iloc[-MEDIUM_TERM_DAYS] - 1) * 100
+
+        results.append({
+            "Ticker": ticker,
+            "Name": name,
+            "Momentum 1M (%)": round(momentum_1m, 2),
+            "Momentum 3M (%)": round(momentum_3m, 2)
+        })
+
     except Exception as e:
         print(f"⚠️ Error fetching {ticker} ({name}): {e}")
 
-# Convert to DataFrame
-if not results:
-    print("⚠️ No ETF data fetched successfully. Exiting.")
-    exit(1)
+# -----------------------------
+# SELECT TOP N BY 3-MONTH MOMENTUM
+# -----------------------------
+top_etfs = sorted(results, key=lambda x: x["Momentum 3M (%)"], reverse=True)[:TOP_N]
 
-momentum_df = pd.DataFrame(results)
-
-# Rank by 1M momentum (you can change metric)
-momentum_df.sort_values("1M (%)", ascending=False, inplace=True)
-momentum_df = momentum_df.head(TOP_N)
-momentum_df['Rank'] = range(1, len(momentum_df) + 1)
-
-# Generate HTML
-html_content = f"""
+# -----------------------------
+# GENERATE HTML DASHBOARD
+# -----------------------------
+html = """
 <html>
-<head>
-<title>Top {TOP_N} ETFs by Momentum</title>
-<style>
-body {{ font-family: Arial, sans-serif; margin: 20px; }}
-table {{ border-collapse: collapse; width: 80%; }}
-th, td {{ border: 1px solid #ddd; padding: 8px; text-align: center; }}
-th {{ background-color: #4CAF50; color: white; }}
-tr:nth-child(even) {{ background-color: #f2f2f2; }}
-</style>
-</head>
+<head><title>Top ETF Momentum</title></head>
 <body>
-<h2>Top {TOP_N} ETFs by Momentum (as of {datetime.today().strftime('%Y-%m-%d')})</h2>
-<table>
+<h1>Top {n} ETFs by 3-Month Momentum</h1>
+<table border="1" cellpadding="5">
 <tr>
-<th>Rank</th>
-<th>Ticker</th>
-<th>Name</th>
-<th>1M (%)</th>
-<th>3M (%)</th>
+<th>Rank</th><th>Ticker</th><th>Name</th><th>1-Month Momentum (%)</th><th>3-Month Momentum (%)</th>
 </tr>
-"""
+""".format(n=TOP_N)
 
-for _, row in momentum_df.iterrows():
-    html_content += f"""
-<tr>
-<td>{row['Rank']}</td>
-<td>{row['Ticker']}</td>
-<td>{row['Name']}</td>
-<td>{row['1M (%)']}</td>
-<td>{row['3M (%)']}</td>
-</tr>
-"""
+for i, etf in enumerate(top_etfs, 1):
+    html += f"<tr><td>{i}</td><td>{etf['Ticker']}</td><td>{etf['Name']}</td>"
+    html += f"<td>{etf['Momentum 1M (%)']}</td><td>{etf['Momentum 3M (%)']}</td></tr>"
 
-html_content += """
-</table>
-</body>
-</html>
-"""
+html += "</table></body></html>"
 
-# Write to HTML file
-Path(OUTPUT_HTML).write_text(html_content)
-print(f"✅ Top {TOP_N} ETFs dashboard written to {OUTPUT_HTML}")
+# -----------------------------
+# SAVE HTML
+# -----------------------------
+Path(HTML_OUTPUT).write_text(html)
+print(f"✅ Dashboard written to {HTML_OUTPUT}")
